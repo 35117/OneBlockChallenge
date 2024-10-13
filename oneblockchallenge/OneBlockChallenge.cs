@@ -1,5 +1,4 @@
-﻿using NuGet.Protocol.Plugins;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Terraria;
 using Terraria.ID;
@@ -8,7 +7,7 @@ using TShockAPI;
 using TShockAPI.Hooks;
 using Microsoft.Xna.Framework;
 using Terraria.Utilities;
-using Google.Protobuf.WellKnownTypes;
+using static Org.BouncyCastle.Math.EC.ECCurve;
 
 namespace OneBlockChallenge
 {
@@ -19,11 +18,16 @@ namespace OneBlockChallenge
         public override string Author => "35117";
         public override string Description => "单方块生存，群777541014";
         public override string Name => "OneBlockChallenge";
-        public override Version Version => new Version(1, 1, 0, 0);
-        string whathehell = "不会真的有人反编译新手写的插件吧";
-        private Random _random = new Random();
+        public override Version Version => new Version(1, 4, 3, 0);
+        const string whathehell = "不会真的有人反编译新手写的插件吧";
+        static private Random random = new Random();
         private static List<int> RandomTilePool = new List<int>();
+        List<Tuple<int, int>> generatedStructures = new List<Tuple<int, int>>();
         internal static Configuration Config = new();
+        int MaxTileRangeX = Main.maxTilesX - 50;
+        int MaxTileRangeY = Main.maxTilesY - 50;
+        int MinTileRangeX = 50;
+        int MinTileRangeY = 50;
         public OneBlockChallenge(Main game) : base(game)
         {
         }
@@ -41,19 +45,16 @@ namespace OneBlockChallenge
         }
         #endregion
 
-        #region 插件启用放置方块
-        void OnTileEdit(object o, GetDataHandlers.TileEditEventArgs args)
+        #region 卸载钩子
+        protected override void Dispose(bool disposing)
         {
-            if(Config.Enabled)
+            if (disposing)
             {
-                if (args.X == Main.spawnTileX && args.Y == Main.spawnTileY)
-                {
-                    if (args.Action == GetDataHandlers.EditAction.KillTile && args.EditData == 0)
-                    {
-                        PlaceRandomBlock();
-                    }
-                }
+                TShockAPI.Hooks.GeneralHooks.ReloadEvent -= ReloadEvent;
+                ServerApi.Hooks.GamePostInitialize.Deregister(this, OnWorldload);
+                GetDataHandlers.TileEdit -= OnTileEdit;
             }
+            base.Dispose(disposing);
         }
         #endregion
 
@@ -69,14 +70,6 @@ namespace OneBlockChallenge
         }
         #endregion
 
-        #region 加载配置
-        private static void LoadConfig()
-        {
-            Config = Configuration.Read();
-            Config.Write();
-        }
-        #endregion
-
         #region 重读
         private static void ReloadEvent(ReloadEventArgs e)
         {
@@ -87,6 +80,31 @@ namespace OneBlockChallenge
         }
         #endregion
 
+        #region 加载配置
+        private static void LoadConfig()
+        {
+            Config = Configuration.Read();
+            Config.Write();
+        }
+        #endregion
+
+        #region 插件启用时，破坏图格放置方块
+        void OnTileEdit(object o, GetDataHandlers.TileEditEventArgs args)
+        {
+            if(Config.Enabled)
+            {
+                if (args.X == Main.spawnTileX && args.Y == Main.spawnTileY)
+                {
+                    if (args.Action == GetDataHandlers.EditAction.KillTile && args.EditData == 0)
+                    {
+                        PlaceRandomBlock();
+                        args.Handled = true;
+                    }
+                }
+            }
+        }
+        #endregion
+
         #region 更新随机池
         private static void UpdateRandomTilePool()
         {
@@ -94,45 +112,31 @@ namespace OneBlockChallenge
             RandomTilePool.Clear();
 
             // 添加“无限制”对应的图格id
-            if (Config.BOSS对应图格.ContainsKey("无限制"))
+            if (Config.BossTile.ContainsKey("无限制"))
             {
-                RandomTilePool.AddRange(Config.BOSS对应图格["无限制"]);
+                RandomTilePool.AddRange(Config.BossTile["无限制"]);
             }
 
             // 添加已击败的Boss对应的图格id
-            foreach (var bossKey in Config.BOSS击败检测.Keys)
+            foreach (var bossKey in Config.BossDefeated.Keys)
             {
-                if (Config.BOSS击败检测[bossKey])
+                if (Config.BossDefeated[bossKey])
                 {
-                    if (Config.BOSS对应图格.ContainsKey(bossKey))
+                    if (Config.BossTile.ContainsKey(bossKey))
                     {
-                        RandomTilePool.AddRange(Config.BOSS对应图格[bossKey]);
+                        RandomTilePool.AddRange(Config.BossTile[bossKey]);
                     }
                 }
             }
         }
         #endregion
 
-        #region 卸载钩子
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                TShockAPI.Hooks.GeneralHooks.ReloadEvent -= ReloadEvent;
-                ServerApi.Hooks.GamePostInitialize.Deregister(this, OnWorldload);
-                GetDataHandlers.TileEdit -= OnTileEdit;
-            }
-            base.Dispose(disposing);
-        }
-        #endregion
-
         #region 放置方块
         private void PlaceRandomBlock()
         {
+            WorldGen.KillTile(Main.spawnTileX, Main.spawnTileY);
             ushort tileType = GetRandomTileType();
-            // 正常放置
             WorldGen.PlaceTile(Main.spawnTileX, Main.spawnTileY, tileType, false, true, -1, 0);
-            // 发送数据包
             NetMessage.SendTileSquare(-1, Main.spawnTileX, Main.spawnTileY, (TileChangeType)0);
 
         }
@@ -145,7 +149,7 @@ namespace OneBlockChallenge
             {
                 args.Player.SendErrorMessage("OBC 指令需要至少一个子指令。有效子指令如下：\n" +
                     "obc place [tileType] -- 手动放置方块\n" +
-                    "obc create -- 创建基础空岛地图");
+                    "obc create [yes] -- 创建基础空岛地图，需要确认");
                 return;
             }
 
@@ -156,10 +160,17 @@ namespace OneBlockChallenge
                     ManualPlace(args);
                     break;
                 case "create":
-                    CreateMap(args);
+                    if (args.Parameters.Count > 1 && args.Parameters[1].ToLower() == "yes")
+                    {
+                        CreateMap(args);
+                    }
+                    else
+                    {
+                        args.Player.SendErrorMessage("创建地图操作需要使用 'obc create yes' 来确认。");
+                    }
                     break;
                 default:
-                    args.Player.SendErrorMessage("无效的 OBC 子指令。");
+                    args.Player.SendErrorMessage("无效的 obc 子指令。输入/obc查看有效指令。");
                     break;
             }
         }
@@ -188,7 +199,7 @@ namespace OneBlockChallenge
         }
         #endregion
 
-        #region 生成空岛地图
+        #region 生成空岛地图方法1
         private void CreateMap(CommandArgs args)
         {
             long Time1 = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -199,80 +210,104 @@ namespace OneBlockChallenge
                     Main.tile[x, y].ClearEverything();
                     NetMessage.SendTileSquare(-1, x, y, (TileChangeType)0);
                 }
-                int xremainnum = Main.maxTilesX - x;
-                if (xremainnum % 100 == 0)
+                if (Config.Broadcast["生成地图广播"])
                 {
-                    float xremainpercent = x*100 / Main.maxTilesX;
-                    TShock.Utils.Broadcast($"[OneBlockChallenge] 已清空100列图格，剩余{xremainnum}列（{xremainpercent}%）", new Color(0, 255, 0));
+                    int xremainnum = Main.maxTilesX - x;
+                    if (xremainnum % 100 == 0)
+                    {
+                        float xremainpercent = x * 100 / Main.maxTilesX;
+                        TShock.Utils.Broadcast($"[OneBlockChallenge] 已清空100列图格，剩余{xremainnum}列（{xremainpercent}%）", new Color(0, 255, 0));
+                    }
                 }
             }
-
-            for (int x = Main.spawnTileX - 500; x < Main.spawnTileX - 497; x++) 
+            if (Config.MapRandomPlace)
             {
-                WorldGen.PlaceTile(x, Main.spawnTileY, 25, false, true, -1, 0);
-                NetMessage.SendTileSquare(-1, x, Main.spawnTileY, (TileChangeType)0);
-            }
-            WorldGen.Place3x2(Main.spawnTileX - 499, Main.spawnTileY-1, 26, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX - 499, Main.spawnTileY-1, 3, 0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 腐化祭坛已生成，位于{Main.spawnTileX -499},{Main.spawnTileY - 1}", new Color(0, 255, 0));
+                PlaceRandomBlock();
+                WorldGen.PlaceTile(Main.spawnTileX, Main.spawnTileY + 1, 226, false, true, -1, 0);
 
-            for (int x = Main.spawnTileX + 500; x < Main.spawnTileX + 503; x++)
+                int DemonAltarX, DemonAltarY;
+                CheckStructure(out DemonAltarX, out DemonAltarY, 100);
+                CreateAltar(DemonAltarX, DemonAltarY, 25, 26, 0);
+
+                int CrimsonAltarX, CrimsonAltarY;
+                CheckStructure(out CrimsonAltarX, out CrimsonAltarY, 100);
+                CreateAltar(CrimsonAltarX, CrimsonAltarY, 203, 26, 1);
+
+                int LihzahrdAltarX, LihzahrdAltarY;
+                CheckStructure(out LihzahrdAltarX, out LihzahrdAltarY, 100);
+                CreateAltar(LihzahrdAltarX, LihzahrdAltarY, 226, 237, 0);
+
+                int HellforgeX, HellforgeY;
+                CheckStructure(out HellforgeX, out HellforgeY, 100);
+                CreateAltar(HellforgeX, HellforgeY, 75, 77, 0);
+
+                int WaterX, WaterY;
+                CheckStructure(out WaterX, out WaterY, 100, true);
+                CreateLiquid(WaterX, WaterY, 0);
+
+                int LavaX, LavaY;
+                CheckStructure(out LavaX, out LavaY, 100);
+                CreateLiquid(LavaX, LavaY, 1);
+
+                int ShimmerX, ShimmerY;
+                CheckStructure(out ShimmerX, out ShimmerY, 100);
+                CreateLiquid(ShimmerX, ShimmerY, 3);
+
+                if (Config.Broadcast["生成地图广播"])
+                {
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 腐化祭坛已生成，位于{DemonAltarX},{DemonAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 猩红祭坛已生成，位于{CrimsonAltarX},{CrimsonAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 丛林蜥蜴祭坛已生成，位于{LihzahrdAltarX},{LihzahrdAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 地狱熔炉已生成，位于{HellforgeX},{HellforgeY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 初始方块已生成", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 水已生成，位于{WaterX},{WaterY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 熔岩已生成，位于{LavaX},{LavaY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 微光已生成，位于{ShimmerX},{ShimmerY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 地牢点位于{Main.dungeonX},{Main.dungeonY}", new Color(0, 255, 0));
+                }
+
+            }
+            else
             {
-                WorldGen.PlaceTile(x, Main.spawnTileY , 203, false, true, -1, 0);
-                NetMessage.SendTileSquare(-1, x, Main.spawnTileY, (TileChangeType)0);
+
+                int DemonAltarX = Main.spawnTileX - 500;
+                int DemonAltarY = Main.spawnTileY;
+                int CrimsonAltarX = Main.spawnTileX + 500;
+                int CrimsonAltarY = Main.spawnTileY;
+                int LihzahrdAltarX = Main.spawnTileX - 500;
+                int LihzahrdAltarY = Main.spawnTileY + 500;
+                int HellforgeX = Main.spawnTileX;
+                int HellforgeY = Main.maxTilesY - 200;
+                int WaterX = Main.spawnTileX;
+                int WaterY = Main.spawnTileY + 200;
+                int LavaX = Main.spawnTileX;
+                int LavaY = Main.maxTilesY - 300;
+                int ShimmerX = Main.spawnTileX + 500;
+                int ShimmerY = Main.spawnTileY + 500;
+                PlaceRandomBlock();
+                WorldGen.PlaceTile(Main.spawnTileX, Main.spawnTileY + 1, 226, false, true, -1, 0);
+
+                CreateAltar(DemonAltarX, DemonAltarY, 25, 26, 0);
+                CreateAltar(CrimsonAltarX, CrimsonAltarY, 203, 26, 1);
+                CreateAltar(LihzahrdAltarX, LihzahrdAltarY, 226, 237, 0);
+                CreateAltar(HellforgeX, HellforgeY, 75, 77, 0);
+                CreateLiquid(WaterX, WaterY, 0);
+                CreateLiquid(LavaX, LavaY, 1);
+                CreateLiquid(ShimmerX, ShimmerY, 3);
+                if (Config.Broadcast["生成地图广播"])
+                {
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 腐化祭坛已生成，位于{DemonAltarX},{DemonAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 猩红祭坛已生成，位于{CrimsonAltarX},{CrimsonAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 丛林蜥蜴祭坛已生成，位于{LihzahrdAltarX},{LihzahrdAltarY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 地狱熔炉已生成，位于{HellforgeX},{HellforgeY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 初始方块已生成", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 水已生成，位于{WaterX},{WaterY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 熔岩已生成，位于{LavaX},{LavaY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 微光已生成，位于{ShimmerX},{ShimmerY}", new Color(0, 255, 0));
+                    TShock.Utils.Broadcast($"[OneBlockChallenge] 地牢点位于{Main.dungeonX},{Main.dungeonY}", new Color(0, 255, 0));
+                }
+
             }
-            WorldGen.Place3x2(Main.spawnTileX + 501, Main.spawnTileY-1, 26, 1);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX + 501, Main.spawnTileY-1, 3, 0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 猩红祭坛已生成，位于{Main.spawnTileX + 501},{Main.spawnTileY - 1}", new Color(0, 255, 0));
-
-            for (int x = Main.spawnTileX - 500; x < Main.spawnTileX - 497; x++)
-            {
-                WorldGen.PlaceTile(x, Main.spawnTileY + 500, 226, false, true, -1, 0);
-                NetMessage.SendTileSquare(-1, x, Main.spawnTileY + 500, (TileChangeType)0);
-            }
-            WorldGen.Place3x2(Main.spawnTileX - 499, Main.spawnTileY + 499, 237, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX - 499, Main.spawnTileY + 499, 3, 0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 丛林蜥蜴祭坛已生成，位于{Main.spawnTileX - 499},{Main.spawnTileY + 499}", new Color(0, 255, 0));
-
-            PlaceRandomBlock();
-            WorldGen.PlaceTile(Main.spawnTileX, Main.spawnTileY + 1, 226, false, true, -1, 0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 初始方块已生成", new Color(0, 255, 0));
-
-
-            WorldGen.PlaceLiquid(Main.spawnTileX, Main.spawnTileY + 200, 0, byte.MaxValue);
-            NetMessage.sendWater(Main.spawnTileX, Main.spawnTileY + 200);
-            WorldGen.PlaceTile(Main.spawnTileX, Main.spawnTileY + 201, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX, Main.spawnTileY + 201, (TileChangeType)0);
-            WorldGen.PlaceTile(Main.spawnTileX+1, Main.spawnTileY + 200, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX + 1, Main.spawnTileY + 200, (TileChangeType)0);
-            WorldGen.PlaceTile(Main.spawnTileX-1, Main.spawnTileY + 200, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX-1, Main.spawnTileY + 200, (TileChangeType)0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 水已生成，位于{Main.spawnTileX},{Main.spawnTileY + 200}", new Color(0, 255, 0));
-
-            WorldGen.PlaceLiquid(Main.spawnTileX, Main.maxTilesY - 300, 1, byte.MaxValue);
-            NetMessage.sendWater(Main.spawnTileX, Main.maxTilesY - 300);
-            WorldGen.PlaceTile(Main.spawnTileX, Main.maxTilesY - 299, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX, Main.maxTilesY - 299, (TileChangeType)0);
-            WorldGen.PlaceTile(Main.spawnTileX + 1, Main.maxTilesY - 300, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX + 1, Main.maxTilesY - 300, (TileChangeType)0);
-            WorldGen.PlaceTile(Main.spawnTileX - 1, Main.maxTilesY - 300, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX - 1, Main.maxTilesY - 300, (TileChangeType)0);
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 熔岩已生成，位于{Main.spawnTileX},{Main.maxTilesY - 300}", new Color(0, 255, 0));
-
-            WorldGen.PlaceTile(Main.spawnTileX + 499, Main.spawnTileY + 500, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX + 499, Main.spawnTileY + 500, (TileChangeType)0);
-            WorldGen.PlaceTile(Main.spawnTileX + 510, Main.spawnTileY + 500, 226, false, true, -1, 0);
-            NetMessage.SendTileSquare(-1, Main.spawnTileX + 510, Main.spawnTileY + 500, (TileChangeType)0);
-
-            for (int x = Main.spawnTileX+500;x< Main.spawnTileX + 510; x++ )
-            {
-                WorldGen.PlaceTile(x, Main.spawnTileY + 501, 226, false, true, -1, 0);
-                NetMessage.SendTileSquare(-1, x, Main.spawnTileY + 501, (TileChangeType)0);
-                WorldGen.PlaceLiquid(x, Main.spawnTileY + 500, 3, byte.MaxValue);
-                NetMessage.sendWater(x, Main.spawnTileY + 500);
-            }
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 微光已生成，位于{Main.spawnTileX + 500},{Main.spawnTileY + 500}", new Color(0, 255, 0));
-            TShock.Utils.Broadcast($"[OneBlockChallenge] 地牢点位于{Main.dungeonX},{Main.dungeonY}", new Color(0, 255, 0));
 
 
             long Time2 = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -292,14 +327,14 @@ namespace OneBlockChallenge
             }
 
             // 使用System.Random生成随机索引
-            var randomIndex = _random.Next(RandomTilePool.Count); // _random是Random类的实例
+            var randomIndex = random.Next(RandomTilePool.Count-1); // _random是Random类的实例
 
             // 从列表中获取随机选择的图格类型
             int randomTileType = RandomTilePool[randomIndex];
 
             // 转换为ushort类型
             ushort tileType = Convert.ToUInt16(randomTileType);
-            if (Config.广播设置["调试广播"])
+            if (Config.Broadcast["调试广播"])
             {
                 TShock.Utils.Broadcast($"{tileType}", new Color(255, 255, 255));
             }
@@ -314,74 +349,74 @@ namespace OneBlockChallenge
             if (IsBoss(npcId))
             {
                 string bossName = (string)Lang.GetNPCName(npcId);
-                if (!Config.BOSS击败检测[bossName])
+                if (!Config.BossDefeated[bossName])
                 {
-                    List<int> newTileTypes = Config.BOSS对应图格.ContainsKey(bossName) ? Config.BOSS对应图格[bossName] : new List<int>();
+                    List<int> newTileTypes = Config.BossTile.ContainsKey(bossName) ? Config.BossTile[bossName] : new List<int>();
                     foreach (var tileType in newTileTypes)
                     {
                         RandomTilePool.Add(tileType);
                     }
 
-                    Config.BOSS击败检测[bossName] = true;
+                    Config.BossDefeated[bossName] = true;
 
-                    if (!Config.BOSS击败检测["邪恶BOSS"] && (bossName == "世界吞噬怪" || bossName == "克苏鲁之脑"))
+                    if (!Config.BossDefeated["邪恶BOSS"] && (bossName == "世界吞噬怪" || bossName == "克苏鲁之脑"))
                     {
-                        newTileTypes = Config.BOSS对应图格["邪恶BOSS"];
+                        newTileTypes = Config.BossTile["邪恶BOSS"];
                         foreach (var tileType in newTileTypes)
                         {
                             RandomTilePool.Add(tileType);
                         }
-                        Config.BOSS击败检测["邪恶BOSS"] = true;
-                        if (Config.广播设置["邪恶BOSS"])
+                        Config.BossDefeated["邪恶BOSS"] = true;
+                        if (Config.Broadcast["邪恶BOSS"])
                         {
                             TShock.Utils.Broadcast("邪恶BOSS 已被击败，对应的图格已加入随机池.", new Color(0, 255, 0));
                         }
                     }
-                    if (!Config.BOSS击败检测["一王"] && (CheckBossDowned("双子魔眼") || CheckBossDowned("毁灭者") || CheckBossDowned("机械骷髅王")))
+                    if (!Config.BossDefeated["一王"] && (CheckBossDowned("双子魔眼") || CheckBossDowned("毁灭者") || CheckBossDowned("机械骷髅王")))
                     {
-                        newTileTypes = Config.BOSS对应图格["一王"];
+                        newTileTypes = Config.BossTile["一王"];
                         foreach (var tileType in newTileTypes)
                         {
                             RandomTilePool.Add(tileType);
                         }
-                        Config.BOSS击败检测["一王"] = true;
-                        if (Config.广播设置["一王"])
+                        Config.BossDefeated["一王"] = true;
+                        if (Config.Broadcast["一王"])
                         {
                             TShock.Utils.Broadcast("一王 已被击败，对应的图格已加入随机池.", new Color(0, 255, 0));
                         }
                     }
 
-                    if (!Config.BOSS击败检测["三王"] && CheckBossDowned("双子魔眼") && CheckBossDowned("毁灭者") && CheckBossDowned("机械骷髅王"))
+                    if (!Config.BossDefeated["三王"] && CheckBossDowned("双子魔眼") && CheckBossDowned("毁灭者") && CheckBossDowned("机械骷髅王"))
                     {
-                        newTileTypes = Config.BOSS对应图格["三王"];
+                        newTileTypes = Config.BossTile["三王"];
                         foreach (var tileType in newTileTypes)
                         {
                             RandomTilePool.Add(tileType);
                         }
-                        Config.BOSS击败检测["三王"] = true;
-                        if (Config.广播设置["三王"])
+                        Config.BossDefeated["三王"] = true;
+                        if (Config.Broadcast["三王"])
                         {
                             TShock.Utils.Broadcast("三王 已被击败，对应的图格已加入随机池.", new Color(0, 255, 0));
                         }
                     }
                     Config.Write();
-                    if (Config.广播设置["所有BOSS"])
+                    if (Config.Broadcast["所有BOSS"])
                     {
                         TShock.Utils.Broadcast($"{bossName} 已被击败，对应的图格已加入随机池.", new Color(0, 255, 0));
                     }
 
                 }
 
-                if (!Config.BOSS击败检测["双子魔眼"] && CheckBossDowned("双子魔眼")&&(bossName=="激光眼"|| bossName == "魔焰眼"))
+                if (!Config.BossDefeated["双子魔眼"] && CheckBossDowned("双子魔眼")&&(bossName=="激光眼"|| bossName == "魔焰眼"))
                 {
-                    List<int> newTileTypes = Config.BOSS对应图格.ContainsKey(bossName) ? Config.BOSS对应图格[bossName] : new List<int>();
-                    newTileTypes = Config.BOSS对应图格["双子魔眼"];
+                    List<int> newTileTypes = Config.BossTile.ContainsKey(bossName) ? Config.BossTile[bossName] : new List<int>();
+                    newTileTypes = Config.BossTile["双子魔眼"];
 
                     foreach (var tileType in newTileTypes)
                     {
                         RandomTilePool.Add(tileType);
                     }
-                    Config.BOSS击败检测["双子魔眼"] = true;
+                    Config.BossDefeated["双子魔眼"] = true;
                     Config.Write();
                     TShock.Utils.Broadcast("双子魔眼 已被击败，对应的图格已加入随机池.", new Color(0, 255, 0));
                 }
@@ -486,5 +521,73 @@ namespace OneBlockChallenge
             return bossIds.Contains(npcId);
         }
         #endregion
+
+        #region 生成祭坛方法
+        private void CreateAltar(int AltarX, int AltarY, int AltarTile, ushort Altar, ushort AltarStyle)
+        {
+            for (int x = AltarX - 1; x <= AltarX + 1; x++)
+            {
+                WorldGen.PlaceTile(x, AltarY + 1, AltarTile, false, true, -1, 0);
+                NetMessage.SendTileSquare(-1, x, AltarY + 1, (TileChangeType)0);
+            }
+            WorldGen.Place3x2(AltarX, AltarY, Altar, AltarStyle);
+            NetMessage.SendTileSquare(-1, AltarX, AltarY, 3, 3);
+        }
+        #endregion
+
+        #region 生成流体方法
+        private void CreateLiquid(int LiquidX, int LiquidY, byte Liquid)
+        {
+            WorldGen.PlaceLiquid(LiquidX, LiquidY, Liquid, byte.MaxValue);
+            NetMessage.sendWater(LiquidX, LiquidY);
+            WorldGen.PlaceTile(LiquidX, LiquidY + 1, Config.LiquidBlock, false, true, -1, 0);
+            NetMessage.SendTileSquare(-1, LiquidX, LiquidY + 1, (TileChangeType)0);
+            WorldGen.PlaceTile(LiquidX + 1, LiquidY, Config.LiquidBlock, false, true, -1, 0);
+            NetMessage.SendTileSquare(-1, LiquidX + 1, LiquidY, (TileChangeType)0);
+            WorldGen.PlaceTile(LiquidX - 1, LiquidY, Config.LiquidBlock, false, true, -1, 0);
+            NetMessage.SendTileSquare(-1, LiquidX - 1, LiquidY, (TileChangeType)0);
+        }
+        #endregion
+
+        #region 检测结构不重叠方法
+        private void CheckStructure(out int StructureX, out int StructureY, int avoidRadius, bool isWater = false)
+        {
+            bool IsWithinRangeOfExistingStructures(int checkX, int checkY)
+            {
+                foreach (var structure in generatedStructures)
+                {
+                    int structureX = structure.Item1;
+                    int structureY = structure.Item2;
+                    if (Math.Abs(checkX - structureX) <= 5 || Math.Abs(checkY - structureY) <= 5)
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            bool IsWithinSpawnRadius(int checkX, int checkY)
+            {
+                return Math.Abs(checkX - Main.spawnTileX) <= avoidRadius || Math.Abs(checkY - Main.spawnTileY) <= avoidRadius;
+            }
+
+            bool IsBelowSpawnY(int checkY)
+            {
+                return checkY > Main.spawnTileY;
+            }
+
+            do
+            {
+                StructureX = random.Next(MinTileRangeX, MaxTileRangeX);
+                StructureY = random.Next(MinTileRangeY, MaxTileRangeY);
+            } while (IsWithinRangeOfExistingStructures(StructureX, StructureY) ||
+                    (isWater && IsBelowSpawnY(StructureY)) || // 如果是水，则检查是否在出生点Y坐标以上
+                    IsWithinSpawnRadius(StructureX, StructureY)); // 检查是否在出生点的avoidRadius半径内
+
+            generatedStructures.Add(new Tuple<int, int>(StructureX, StructureY));
+        }
+        #endregion
+
     }
+
 }
