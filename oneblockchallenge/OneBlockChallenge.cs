@@ -242,7 +242,7 @@ namespace OneBlockChallenge
                 CreateAltar(HellforgeX, HellforgeY, 75, 77, 0);
 
                 int WaterX, WaterY;
-                CheckStructure(out WaterX, out WaterY, 100, true);宁静
+                CheckStructure(out WaterX, out WaterY, 100, true);
                 CreateLiquid(WaterX, WaterY, 0);
 
                 int LavaX, LavaY;
